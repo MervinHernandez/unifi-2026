@@ -89,9 +89,9 @@ Settings → Networks → Create New Network
 - DHCP Range: 192.168.50.100 – 192.168.50.200
 ```
 
-- [ ] AppleTV VLAN created
-- [ ] VLAN ID confirmed unused: _______________
-- [ ] DHCP enabled and range set
+- [x] AppleTV VLAN created
+- [x] VLAN ID confirmed unused: `50`
+- [x] DHCP enabled and range set
 
 > This VLAN is isolated from the Anders Way default network. The default network is unaffected.
 

@@ -62,20 +62,17 @@ Phase 8: Test & validate YouTube TV market
 ## Phase 1: Pre-Flight Checks
 
 ### Nashville — WingMan UDM Pro
-- [ ] Confirm WAN IP shows Nashville location (visit whatismyip.com from Nashville)
-- [ ] Note WAN interface name: _______________ (usually `eth8` or labeled `WAN`)
-- [ ] Confirm firmware version: Settings → System → Updates → _______________
-- [ ] Confirm `192.168.50.0/24` is not already in use anywhere on Nashville network
-- [ ] WAN IP type — static or dynamic?
-  - [ ] If dynamic: configure DDNS — Settings → Internet → [WAN] → Dynamic DNS
-  - [ ] Note WAN IP or DDNS hostname to use for VPN: _______________
+- [x] Confirm WAN IP shows Nashville location (visit whatismyip.com from Nashville)
+- [x] Note WAN interface name: `WAN1`
+- [x] Confirm firmware version: Settings → System → Updates → Network 10.1.85
+- [x] Confirm `192.168.50.0/24` is not already in use anywhere on Nashville network
+- [x] WAN IP type — static or dynamic?: `Static`
 
 ### Orlando — Anders Way UCG Max
-- [ ] Confirm firmware version: Settings → System → Updates → _______________
-- [ ] Note Apple TV MAC address: _______________
-- [ ] Confirm `192.168.50.0/24` is not already in use on Orlando network
-  - Settings → Networks — scan existing VLANs/subnets
-- [ ] Note any existing VLANs and their IDs to avoid conflicts: _______________
+- [x] Confirm firmware version: Settings → System → Updates → Network 10.8.85
+- [x] Note Apple TV MAC address: `c4:f7:c1:3c:d7:1e`
+- [x] Confirm `192.168.50.0/24` is not already in use on Orlando network
+- [x] Note any existing VLANs and their IDs to avoid conflicts: `None`
 
 ---
 

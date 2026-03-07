@@ -117,7 +117,7 @@ Tailscale uses WireGuard with built-in NAT traversal — no port forwarding, no 
 sudo tailscale up --advertise-exit-node
 ```
 
-- [ ] Exit node advertised on Mac Mini
+- [x] Exit node advertised on Mac Mini
 
 ### Step 3b — Approve exit node in Tailscale admin console
 
@@ -126,51 +126,34 @@ https://login.tailscale.com/admin/machines
 → Mac Mini → "..." → Edit route settings → Enable "Use as exit node" ✓
 ```
 
-- [ ] Exit node approved in admin console
-- [ ] Note Mac Mini's Tailscale hostname or IP (100.x.x.x): _______________
+- [x] Exit node approved in admin console
+- [x] Note Mac Mini's Tailscale hostname or IP (100.x.x.x): `100.98.194.40`
 
 ### Step 3c — SSH into Hardwood House UniFi Express
 
 ```bash
-ssh root@<hardwood-UX-LAN-IP>
+ssh root@192.168.2.1
 ```
 
-- [ ] SSH access confirmed
-- [ ] UX LAN IP noted: _______________
+- [x] SSH access confirmed
+- [x] UX LAN IP noted: `192.168.2.1`
 
 ### Step 3d — Install Tailscale on UniFi Express (ARM64)
 
 ```bash
-curl -fsSL https://tailscale.com/install.sh | sh
+
 ```
 
-If the install script fails (package manager restrictions on UniFi OS):
-```bash
-# Manual ARM64 binary install to persistent location
-mkdir -p /data/tailscale
-cd /tmp
-# Check latest version at pkgs.tailscale.com/stable and substitute below
-curl -fsSL https://pkgs.tailscale.com/stable/tailscale_<version>_arm64.tgz -o tailscale.tgz
-tar xzf tailscale.tgz
-cp tailscale_*/tailscale tailscale_*/tailscaled /data/tailscale/
-ln -sf /data/tailscale/tailscale /usr/bin/tailscale
-ln -sf /data/tailscale/tailscaled /usr/bin/tailscaled
-```
-
-- [ ] Tailscale installed — confirm with `tailscale version`
+- [x] Tailscale installed — confirm with `tailscale version`
 
 ### Step 3e — Start tailscaled and authenticate
 
 ```bash
-mkdir -p /data/tailscale
-tailscaled --state=/data/tailscale/tailscaled.state &
-sleep 3
-tailscale up
-# Visit the auth URL printed — log in to your tailnet
+apt-get install tailscale -y
 ```
 
-- [ ] tailscaled running
-- [ ] Express authenticated and visible in Tailscale admin console
+- [x] tailscaled running
+- [x] Express authenticated and visible in Tailscale admin console
 
 ### Step 3f — Set Nashville Mac Mini as exit node
 
@@ -182,8 +165,8 @@ tailscale up \
 
 `--exit-node-allow-lan-access=true` ensures Hardwood House LAN devices remain reachable even though an exit node is set.
 
-- [ ] Exit node set to Nashville Mac Mini
-- [ ] Confirm with: `tailscale status` — Mac Mini shows as exit node
+- [x] Exit node set to Nashville Mac Mini
+- [x] Confirm with: `tailscale status` — Mac Mini shows as exit node
 
 ### Step 3g — Add policy routing to send AppleTV VLAN through Tailscale
 

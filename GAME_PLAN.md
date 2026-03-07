@@ -16,18 +16,18 @@ YouTube TV uses your WAN IP to determine your market/local channels. By routing 
 | Nashville, TN | WingMan UDM Pro | 10.1.85 | 192.168.1.0/24 |
 | Orlando, FL | Anders Way UCG Max | 10.1.85 | (existing default, untouched) |
 | Orlando, FL | AppleTV VLAN (new) | — | 192.168.50.0/24 |
-| VPN Tunnel | WireGuard | — | 10.100.0.0/30 |
+| VPN Tunnel | Tailscale (WireGuard) | — | 100.x.x.x (auto-assigned by Tailscale) |
 
 ### Architecture
 
 ```
 Anders Way default network ──────────────────────────────► Orlando WAN (unchanged)
 
-Anders Way AppleTV VLAN (192.168.50.0/24)
-    └─► WireGuard Tunnel (10.100.0.0/30)
-            └─► Nashville UDM Pro
-                    └─► YouTube TV domains only ──────────► Nashville WAN IP
-                    └─► All other traffic ────────────────► Nashville WAN (passthrough)
+Hardwood House AppleTV VLAN (192.168.50.0/24)
+    └─► Tailscale tunnel (UniFi Express, policy routing)
+            └─► Nashville Mac Mini (Tailscale exit node)
+                    └─► ALL AppleTV VLAN traffic ─────────► Nashville WAN IP
+                    └─► All other Hardwood traffic ───────► Hardwood WAN (unchanged)
 ```
 
 The Anders Way **default network is completely untouched**. The VPN tunnel is scoped only to the new `192.168.50.0/24` AppleTV VLAN. Nashville never sees the existing Orlando default subnet.
@@ -38,7 +38,7 @@ The Anders Way **default network is completely untouched**. The VPN tunnel is sc
 
 | Decision | Choice |
 |---|---|
-| VPN Protocol | WireGuard |
+| VPN Protocol | UniFi Site Magic (WireGuard, cloud-assisted) |
 | Traffic Identification | Domain-Based Traffic Routes |
 | Subnet Strategy | New dedicated VLAN for Apple TV (`192.168.50.0/24`) — default Anders Way network untouched |
 
@@ -66,7 +66,7 @@ Phase 8: Test & validate YouTube TV market
 - [x] Note WAN interface name: `WAN1`
 - [x] Confirm firmware version: Settings → System → Updates → Network 10.1.85
 - [x] Confirm `192.168.50.0/24` is not already in use anywhere on Nashville network
-- [x] WAN IP type — static or dynamic?: `Static`
+- [x] WAN IP type — static or dynamic?: `Static` / `68.53.130.216`
 
 ### Orlando — Anders Way UCG Max
 - [x] Confirm firmware version: Settings → System → Updates → Network 10.8.85
@@ -97,55 +97,137 @@ Settings → Networks → Create New Network
 
 ---
 
-## Phase 3: WireGuard Site-to-Site VPN
+## Phase 2b: Xfinity Gateway — ~~DMZ Setup~~ (Eliminated)
 
-### Step 3a — Nashville (UDM Pro) — Server side
+> **No longer needed.** Switching to UniFi Site Magic removes all dependency on the Xfinity gateway. Site Magic uses outbound-initiated connections through UniFi's cloud relay — no DMZ, no port forwarding, no public IP exposure required.
 
-```
-Settings → VPN → Site-to-Site VPN → Create → WireGuard
-- Name: To-Orlando-AppleTV
-- Role: Server
-- Local WAN Interface: [your WAN interface]
-- Listen Port: 51820
-- Tunnel IP: 10.100.0.1/30
-- Peer (Orlando) Allowed IPs: 192.168.50.0/24
-```
+---
 
-- [ ] Nashville WireGuard server created
-- [ ] Nashville Public Key (copy this — needed for Orlando): _______________
-- [ ] Listen port confirmed open (check firewall rules — port 51820 UDP)
+## Phase 3: Tailscale VPN via Nashville Mac Mini
 
-### Step 3b — Orlando (UCG Max) — Client side
+Tailscale uses WireGuard with built-in NAT traversal — no port forwarding, no DMZ, works through the Xfinity double-NAT on Nashville. The Nashville Mac Mini acts as a Tailscale **exit node**, and the Hardwood House UniFi Express is configured via SSH to route all AppleTV VLAN traffic through it.
 
-```
-Settings → VPN → Site-to-Site VPN → Create → WireGuard
-- Name: To-Nashville
-- Role: Client
-- Server Address: [Nashville WAN IP or DDNS hostname]
-- Server Port: 51820
-- Server Public Key: [Nashville public key from Step 3a]
-- Tunnel IP: 10.100.0.2/30
-- Allowed IPs: 0.0.0.0/0
-  (Traffic Routes in Phase 5 will control what actually uses the tunnel — this allows full routing flexibility)
-- Pre-shared Key: [generate one, set same on both sides]
+> **Note on firmware updates:** Tailscale is installed via SSH outside of UniFi's official support. Firmware updates may require re-installing the Tailscale binary. The state file and boot script are stored in `/data/` which persists across updates.
+
+---
+
+### Step 3a — Nashville Mac Mini: Enable exit node
+
+```bash
+sudo tailscale up --advertise-exit-node
 ```
 
-- [ ] Orlando WireGuard client created
-- [ ] Nashville server address entered: _______________
-- [ ] Pre-shared key set on both sides
+- [ ] Exit node advertised on Mac Mini
 
-### Step 3c — Nashville: Add return route to Orlando AppleTV VLAN
-
-Nashville needs to know how to route return traffic back to `192.168.50.0/24` through the tunnel.
+### Step 3b — Approve exit node in Tailscale admin console
 
 ```
-Settings → Routing → Static Routes → Create
-- Name: Orlando-AppleTV-Return
-- Destination: 192.168.50.0/24
-- Gateway / Interface: [WireGuard tunnel interface]
+https://login.tailscale.com/admin/machines
+→ Mac Mini → "..." → Edit route settings → Enable "Use as exit node" ✓
 ```
 
-- [ ] Static return route created on Nashville
+- [ ] Exit node approved in admin console
+- [ ] Note Mac Mini's Tailscale hostname or IP (100.x.x.x): _______________
+
+### Step 3c — SSH into Hardwood House UniFi Express
+
+```bash
+ssh root@<hardwood-UX-LAN-IP>
+```
+
+- [ ] SSH access confirmed
+- [ ] UX LAN IP noted: _______________
+
+### Step 3d — Install Tailscale on UniFi Express (ARM64)
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+```
+
+If the install script fails (package manager restrictions on UniFi OS):
+```bash
+# Manual ARM64 binary install to persistent location
+mkdir -p /data/tailscale
+cd /tmp
+# Check latest version at pkgs.tailscale.com/stable and substitute below
+curl -fsSL https://pkgs.tailscale.com/stable/tailscale_<version>_arm64.tgz -o tailscale.tgz
+tar xzf tailscale.tgz
+cp tailscale_*/tailscale tailscale_*/tailscaled /data/tailscale/
+ln -sf /data/tailscale/tailscale /usr/bin/tailscale
+ln -sf /data/tailscale/tailscaled /usr/bin/tailscaled
+```
+
+- [ ] Tailscale installed — confirm with `tailscale version`
+
+### Step 3e — Start tailscaled and authenticate
+
+```bash
+mkdir -p /data/tailscale
+tailscaled --state=/data/tailscale/tailscaled.state &
+sleep 3
+tailscale up
+# Visit the auth URL printed — log in to your tailnet
+```
+
+- [ ] tailscaled running
+- [ ] Express authenticated and visible in Tailscale admin console
+
+### Step 3f — Set Nashville Mac Mini as exit node
+
+```bash
+tailscale up \
+  --exit-node=<mac-mini-tailscale-hostname-or-IP> \
+  --exit-node-allow-lan-access=true
+```
+
+`--exit-node-allow-lan-access=true` ensures Hardwood House LAN devices remain reachable even though an exit node is set.
+
+- [ ] Exit node set to Nashville Mac Mini
+- [ ] Confirm with: `tailscale status` — Mac Mini shows as exit node
+
+### Step 3g — Add policy routing to send AppleTV VLAN through Tailscale
+
+```bash
+# Enable IP forwarding
+sysctl -w net.ipv4.ip_forward=1
+
+# Confirm Tailscale interface name (usually tailscale0)
+ip link show | grep tailscale
+
+# Create a separate routing table (200) that routes everything out Tailscale
+ip route add default dev tailscale0 table 200
+
+# Apply that table to all traffic sourced from the AppleTV VLAN
+ip rule add from 192.168.50.0/24 lookup 200 priority 100
+
+# MASQUERADE: make VLAN 50 traffic appear as the Express's Tailscale IP
+# so it routes correctly through the exit node
+iptables -t nat -A POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE
+```
+
+- [ ] Policy routing rules applied
+- [ ] Test: assign a laptop to VLAN 50, visit whatismyip.com — should show Nashville IP
+
+### Step 3h — Make routing rules persistent across reboots
+
+```bash
+mkdir -p /data/on_boot.d
+cat > /data/on_boot.d/99-tailscale-routing.sh << 'EOF'
+#!/bin/sh
+sleep 10  # wait for network to be ready
+tailscaled --state=/data/tailscale/tailscaled.state &
+sleep 5
+tailscale up --exit-node=<mac-mini-hostname> --exit-node-allow-lan-access=true
+sysctl -w net.ipv4.ip_forward=1
+ip route add default dev tailscale0 table 200 2>/dev/null || true
+ip rule add from 192.168.50.0/24 lookup 200 priority 100 2>/dev/null || true
+iptables -t nat -A POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE
+EOF
+chmod +x /data/on_boot.d/99-tailscale-routing.sh
+```
+
+- [ ] Boot script created and executable
+- [ ] Test persistence: reboot UX, re-check routing rules with `ip rule show` and `tailscale status`
 
 ---
 
@@ -159,52 +241,39 @@ Settings → Routing → Static Routes → Create
 
 ---
 
-## Phase 5: Domain-Based Traffic Routes — Orlando UCG Max
+## Phase 5: Domain-Based Traffic Routes — Not Required
 
-```
-Settings → Traffic Management → Traffic Routes → Create Route
-- Name: YouTube TV via Nashville
-- Interface: [WireGuard VPN tunnel — To-Nashville]
-- Matching Type: Domain
-  Add domains:
-    youtube.com
-    googlevideo.com
-    googleapis.com
-    ggpht.com
-    ytimg.com
-    youtubekids.com
-    youtubei.googleapis.com
-    googleusercontent.com
-- Apply to: AppleTV network (192.168.50.0/24)
-```
+> **With the Tailscale approach, domain-based Traffic Routes are not needed.** The policy routing rules from Phase 3g route ALL AppleTV VLAN (`192.168.50.0/24`) traffic through the Tailscale tunnel at the kernel level — before DNS interception. Every connection from an AppleTV VLAN device exits through Nashville WAN automatically.
+>
+> This is simpler and more reliable than domain-based routing: no risk of missed domains, hardcoded IPs, or CDN bypasses.
 
-- [ ] Traffic route created
-- [ ] All domains added
-- [ ] Route scoped to AppleTV VLAN only
-
-> UniFi intercepts DNS responses for matched domains and routes those IPs through the tunnel. If any YouTube TV CDN traffic bypasses DNS (hardcoded IPs), a supplemental IP-based route for Google AS15169 may be needed — address this in testing if streams don't work.
+- [x] Domain-based Traffic Routes — skipped (not needed with Tailscale policy routing)
 
 ---
 
-## Phase 6: NAT Verification — Nashville UDM Pro
+## Phase 6: NAT Verification — Nashville Mac Mini (Tailscale Exit Node)
 
-UniFi auto-configures masquerade NAT on WAN. Verify it covers VPN-originated traffic:
+With Tailscale, the Nashville Mac Mini performs NAT automatically when acting as an exit node — all traffic forwarded through it exits Nashville WAN as the Mac Mini's IP (which is NATted by the Nashville router to the Nashville public WAN IP `68.53.130.216`).
 
-```
-Settings → Routing → NAT (or Firewall & Security → NAT)
-- Confirm an outbound masquerade rule exists for WAN interface covering all sources
-```
-
-If YouTube TV traffic arrives at Nashville but doesn't exit to the internet properly, add:
-```
-Settings → Security → Traffic & Firewall Rules → NAT → Create
-- Rule Type: Masquerade
-- Source: 192.168.50.0/24  (Orlando AppleTV VLAN)
-- Outbound Interface: WAN
+**Verify this is working:**
+```bash
+# On the Nashville Mac Mini — confirm IP forwarding is enabled (Tailscale enables this automatically)
+sysctl net.inet.ip.forwarding   # macOS
+# Expected: net.inet.ip.forwarding = 1
 ```
 
-- [ ] NAT confirmed active on Nashville WAN
-- [ ] Manual NAT rule added if needed: Yes / No
+If traffic isn't exiting Nashville (YouTube TV still shows wrong market after Phase 8 testing):
+```bash
+# On Nashville Mac Mini — confirm Tailscale sees the Express as a connected client
+tailscale status
+# Express should appear in the list
+
+# Check exit node is active
+tailscale status | grep -i exit
+```
+
+- [ ] Nashville Mac Mini IP forwarding confirmed active (Tailscale manages this)
+- [ ] Express visible in `tailscale status` on Mac Mini
 
 ---
 
@@ -259,14 +328,15 @@ Then connect Apple TV to this SSID.
 
 | Phase | Status | Notes |
 |---|---|---|
-| Decision 1: WireGuard | Confirmed | |
+| Decision 1: VPN Protocol | Updated — Tailscale via Nashville Mac Mini exit node | No port forwarding needed; works through double-NAT |
 | Decision 2: Domain-Based Traffic Routes | Confirmed | |
 | Decision 3: AppleTV VLAN (192.168.50.0/24) | Confirmed | Default Anders Way network untouched |
-| Phase 1: Pre-flight checks | Not started | |
-| Phase 2: Create AppleTV VLAN (Orlando) | Not started | |
-| Phase 3: WireGuard VPN setup | Not started | |
+| Phase 1: Pre-flight checks | Complete | Nashville public IP: 68.53.130.216 |
+| Phase 2: Create AppleTV VLAN (Orlando) | Complete | 192.168.50.0/24, VLAN 50 |
+| Phase 2b: Xfinity DMZ (Nashville) | Eliminated | Not needed — Tailscale works through double-NAT |
+| Phase 3: Tailscale VPN setup | Not started | Nashville Mac Mini as exit node; SSH into UX |
 | Phase 4: VPN tunnel verified | Not started | |
-| Phase 5: Domain Traffic Routes (Orlando) | Not started | |
-| Phase 6: NAT verification (Nashville) | Not started | |
+| Phase 5: Domain Traffic Routes | Eliminated | Not needed — all VLAN 50 traffic routes via Nashville at kernel level |
+| Phase 6: NAT verification (Nashville Mac Mini) | Not started | Tailscale handles automatically; verify with tailscale status |
 | Phase 7: Apple TV assigned to VLAN | Not started | |
 | Phase 8: Testing | Not started | |

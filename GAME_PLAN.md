@@ -141,76 +141,196 @@ ssh root@192.168.2.1
 ### Step 3d — Install Tailscale on UniFi Express (ARM64)
 
 ```bash
-
-```
-
-- [x] Tailscale installed — confirm with `tailscale version`
-
-### Step 3e — Start tailscaled and authenticate
-
-```bash
 apt-get install tailscale -y
 ```
 
-- [x] tailscaled running
-- [x] Express authenticated and visible in Tailscale admin console
+- [x] Tailscale installed (`tailscale version` confirmed: 1.94.2)
+- [x] systemd service created automatically — daemon starts on boot
 
-### Step 3f — Set Nashville Mac Mini as exit node
+### Step 3e — Authenticate to tailnet
 
 ```bash
-tailscale up \
-  --exit-node=<mac-mini-tailscale-hostname-or-IP> \
-  --exit-node-allow-lan-access=true
+tailscale up
+# Visit the auth URL printed — log in to your Tailscale account
 ```
 
-`--exit-node-allow-lan-access=true` ensures Hardwood House LAN devices remain reachable even though an exit node is set.
+- [x] Express authenticated and visible in Tailscale admin console as `hardwood-house`
 
-- [x] Exit node set to Nashville Mac Mini
-- [x] Confirm with: `tailscale status` — Mac Mini shows as exit node
+### Step 3f — Cleanup: Remove any leftover rules from previous attempts
 
-### Step 3g — Add policy routing to send AppleTV VLAN through Tailscale
+Before doing anything, verify the current state of ip rules and clear any leftover from prior attempts.
+
+**Check current state:**
+```bash
+ip rule show
+```
+
+If you see `not from 192.168.50.0/24 lookup main priority 200` in the output, remove it:
+```bash
+ip rule del not from 192.168.50.0/24 lookup main priority 200
+```
+
+**Verify Tailscale is down and table 52 is clean:**
+```bash
+tailscale status
+ip route show table 52
+```
+
+Table 52 should only show `100.x.x.x` peer routes — no `0.0.0.0` or `128.0.0.0` default routes. If tailscale is running with an exit node, bring it down first:
+```bash
+tailscale down
+```
+
+**Verify internet is working before proceeding:**
+```bash
+curl -s https://ifconfig.me
+```
+Should return Hardwood House's WAN IP. **Do not proceed if internet is broken at this point.**
+
+- [ ] No leftover ip rules from prior attempts
+- [ ] Tailscale down, table 52 clean
+- [ ] Internet confirmed working
+
+---
+
+### Step 3g — Add bypass rule for all non-VLAN-50 traffic
+
+> **What this does:** Routes all traffic that is NOT from `192.168.50.0/24` through UniFi's WAN table (`201.eth1`) at priority 200 — before Tailscale's rule at priority 5270. This ensures all existing Hardwood House traffic is completely unaffected when the exit node is activated in the next step.
+
+> **Root cause of previous outage:** We used `lookup main` — but UniFi stores the internet default route in `201.eth1`, not `main`. The bypass rule didn't match, traffic fell into Tailscale's table 52, and internet broke. Now corrected to `lookup 201.eth1`.
+
+**Run ONE command:**
+```bash
+ip rule add not from 192.168.50.0/24 lookup 201.eth1 priority 200
+```
+
+**Reversal (if anything looks wrong):**
+```bash
+ip rule del not from 192.168.50.0/24 lookup 201.eth1 priority 200
+```
+
+**CHECKPOINT — verify rule is in place and internet still works:**
+```bash
+ip rule show | grep 200
+```
+Expected output:
+```
+200:    not from 192.168.50.0/24 lookup 201.eth1
+```
 
 ```bash
-# Enable IP forwarding
-sysctl -w net.ipv4.ip_forward=1
+curl -s https://ifconfig.me
+```
+Must still return Hardwood WAN IP. **Do not proceed if this fails.**
 
-# Confirm Tailscale interface name (usually tailscale0)
-ip link show | grep tailscale
+- [ ] Bypass rule added at priority 200
+- [ ] Internet confirmed still working after rule added
 
-# Create a separate routing table (200) that routes everything out Tailscale
-ip route add default dev tailscale0 table 200
+---
 
-# Apply that table to all traffic sourced from the AppleTV VLAN
-ip rule add from 192.168.50.0/24 lookup 200 priority 100
+### Step 3h — Bring Tailscale up with Nashville exit node
 
-# MASQUERADE: make VLAN 50 traffic appear as the Express's Tailscale IP
-# so it routes correctly through the exit node
+> **What this does:** Connects the Express to the tailnet and routes all traffic that reaches Tailscale's table 52 through the Nashville Mac Mini. Non-VLAN-50 traffic is blocked from reaching table 52 by the bypass rule added in Step 3g.
+
+**Run ONE command:**
+```bash
+tailscale up --exit-node=mervin-macmini2026 --exit-node-allow-lan-access --ssh
+```
+
+**Reversal (immediately restores normal routing):**
+```bash
+tailscale down
+```
+
+**CHECKPOINT — verify table 52 has exit-node routes:**
+```bash
+ip route show table 52 | grep -E "^0\.|^128\."
+```
+Expected: two lines like:
+```
+0.0.0.0/1 dev tailscale0
+128.0.0.0/1 dev tailscale0
+```
+
+**CHECKPOINT — verify Hardwood internet is still working:**
+```bash
+curl -s https://ifconfig.me
+```
+Must return Hardwood House WAN IP — NOT Nashville's IP (`68.53.130.216`).
+
+If it returns Nashville's IP, the bypass rule is not working. Run reversal immediately:
+```bash
+tailscale down
+ip rule del not from 192.168.50.0/24 lookup 201.eth1 priority 200
+```
+
+- [ ] Tailscale up with exit node set
+- [ ] Table 52 has 0.0.0.0/1 and 128.0.0.0/1 routes to tailscale0
+- [ ] Hardwood internet confirmed working (shows Hardwood WAN IP, not Nashville)
+
+---
+
+### Step 3i — Add MASQUERADE rule for VLAN 50
+
+> **What this does:** Rewrites the source IP of VLAN 50 packets to the Express's own Tailscale IP (`100.91.86.101`) as they leave via `tailscale0`. This is required so the Nashville Mac Mini can route return traffic back correctly through the tunnel.
+
+**Run ONE command:**
+```bash
 iptables -t nat -A POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE
 ```
 
-- [ ] Policy routing rules applied
-- [ ] Test: assign a laptop to VLAN 50, visit whatismyip.com — should show Nashville IP
+**Reversal:**
+```bash
+iptables -t nat -D POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE
+```
 
-### Step 3h — Make routing rules persistent across reboots
+**CHECKPOINT — verify the rule is in place:**
+```bash
+iptables -t nat -L POSTROUTING -n --line-numbers | grep 192.168.50
+```
+Expected: one line showing the MASQUERADE rule for `192.168.50.0/24` out `tailscale0`.
 
+**CHECKPOINT — verify Hardwood internet still working:**
+```bash
+curl -s https://ifconfig.me
+```
+Still must return Hardwood WAN IP.
+
+- [ ] MASQUERADE rule in place
+- [ ] Hardwood internet still working after MASQUERADE added
+
+---
+
+### Step 3j — Make all rules persistent across reboots
+
+> Tailscale's systemd service handles restarting the daemon. This script only needs to re-apply the ip rules and iptables on boot.
+
+**Create the boot script:**
 ```bash
 mkdir -p /data/on_boot.d
 cat > /data/on_boot.d/99-tailscale-routing.sh << 'EOF'
 #!/bin/sh
-sleep 10  # wait for network to be ready
-tailscaled --state=/data/tailscale/tailscaled.state &
-sleep 5
-tailscale up --exit-node=<mac-mini-hostname> --exit-node-allow-lan-access=true
-sysctl -w net.ipv4.ip_forward=1
-ip route add default dev tailscale0 table 200 2>/dev/null || true
-ip rule add from 192.168.50.0/24 lookup 200 priority 100 2>/dev/null || true
-iptables -t nat -A POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE
+sleep 15  # wait for tailscale0 interface to come up after tailscaled starts
+ip rule add not from 192.168.50.0/24 lookup 201.eth1 priority 200 2>/dev/null || true
+tailscale up --exit-node=mervin-macmini2026 --exit-node-allow-lan-access --ssh 2>/dev/null || true
+iptables -t nat -A POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE 2>/dev/null || true
 EOF
 chmod +x /data/on_boot.d/99-tailscale-routing.sh
 ```
 
-- [ ] Boot script created and executable
-- [ ] Test persistence: reboot UX, re-check routing rules with `ip rule show` and `tailscale status`
+**Verify the file looks correct:**
+```bash
+cat /data/on_boot.d/99-tailscale-routing.sh
+```
+
+**Reversal (disable the boot script without deleting it):**
+```bash
+chmod -x /data/on_boot.d/99-tailscale-routing.sh
+```
+
+- [ ] Boot script created at `/data/on_boot.d/99-tailscale-routing.sh`
+- [ ] File is executable (`chmod +x` confirmed)
+- [ ] Contents verified with `cat`
 
 ---
 
@@ -317,7 +437,7 @@ Then connect Apple TV to this SSID.
 | Phase 1: Pre-flight checks | Complete | Nashville public IP: 68.53.130.216 |
 | Phase 2: Create AppleTV VLAN (Orlando) | Complete | 192.168.50.0/24, VLAN 50 |
 | Phase 2b: Xfinity DMZ (Nashville) | Eliminated | Not needed — Tailscale works through double-NAT |
-| Phase 3: Tailscale VPN setup | Not started | Nashville Mac Mini as exit node; SSH into UX |
+| Phase 3: Tailscale VPN setup | In progress | Steps 3a–3e complete; resuming at 3f (cleanup + correct bypass rule) |
 | Phase 4: VPN tunnel verified | Not started | |
 | Phase 5: Domain Traffic Routes | Eliminated | Not needed — all VLAN 50 traffic routes via Nashville at kernel level |
 | Phase 6: NAT verification (Nashville Mac Mini) | Not started | Tailscale handles automatically; verify with tailscale status |

@@ -3,443 +3,515 @@
 ## Overview
 
 **Traffic Flow Goal:**
+
 ```
-Apple TV (Orlando, AppleTV VLAN) → WireGuard Tunnel → Nashville UDM Pro → YouTube TV → Nashville WAN IP
+Anders Way (Orlando) Apple TV / mobile  ---> WireGuard Tunnel ---> Nashville UDM Pro WAN ---> YouTube TV sees Nashville market
+Hardwood House (Orlando) Apple TV / mobile ---> WireGuard Tunnel ---> Nashville UDM Pro WAN ---> YouTube TV sees Nashville market
 ```
 
-YouTube TV uses your WAN IP to determine your market/local channels. By routing YouTube TV traffic through Nashville's WAN, YouTube TV will see a Nashville IP and serve the Nashville market.
+YouTube TV uses your WAN IP to determine your market/local channels. By routing YouTube TV traffic through Nashville's WAN, YouTube TV sees a Nashville IP and serves the Nashville market.
 
 ### Network Reference
 
-| Site | Device | Network Version | Default Subnet |
-|---|---|---|---|
-| Nashville, TN | WingMan UDM Pro | 10.1.85 | 192.168.1.0/24 |
-| Orlando, FL | Anders Way UCG Max | 10.1.85 | (existing default, untouched) |
-| Orlando, FL | AppleTV VLAN (new) | — | 192.168.50.0/24 |
-| VPN Tunnel | Tailscale (WireGuard) | — | 100.x.x.x (auto-assigned by Tailscale) |
+| Site | Device | Network Version | Default Subnet | Role |
+| --- | --- | --- | --- | --- |
+| Nashville, TN | WingMan UDM Pro | 10.1.85 | 192.168.1.0/24 | WireGuard Server + WAN exit point |
+| Orlando, FL | Anders Way UCG Max | 10.1.85 | 192.168.1.0/24 | WireGuard Client |
+| Orlando, FL | Hardwood House UX | 9.0.114 | 192.168.2.0/24 | WireGuard Client |
+
+### Key Constraints
+
+| Constraint | Detail |
+| --- | --- |
+| No UniFi Site-to-Site | Account owners differ across sites — Site Magic / Site-to-Site VPN is not available |
+| Only YouTube TV traffic | Default internet traffic stays on each site's own WAN — only YouTube TV routes through Nashville |
+| Nashville WAN | UDM Pro has the public IP directly (Xfinity/Comcast gateway in bridge mode) |
+| Dynamic DNS needed | Nashville WAN IP may change — DDNS provides a stable WireGuard endpoint |
 
 ### Architecture
 
 ```
-Anders Way default network ──────────────────────────────► Orlando WAN (unchanged)
+Anders Way default traffic ──────────────────────────────────► Anders Way WAN (unchanged)
+Anders Way AppleTV VLAN (192.168.50.0/24)
+    └─► WireGuard tunnel to Nashville UDM Pro
+            └─► ALL AppleTV VLAN traffic ────────────────────► Nashville WAN IP (YouTube TV sees Nashville)
 
+Hardwood House default traffic ──────────────────────────────► Hardwood WAN (unchanged)
 Hardwood House AppleTV VLAN (192.168.50.0/24)
-    └─► Tailscale tunnel (UniFi Express, policy routing)
-            └─► Nashville Mac Mini (Tailscale exit node)
-                    └─► ALL AppleTV VLAN traffic ─────────► Nashville WAN IP
-                    └─► All other Hardwood traffic ───────► Hardwood WAN (unchanged)
+    └─► WireGuard tunnel to Nashville UDM Pro
+            └─► ALL AppleTV VLAN traffic ────────────────────► Nashville WAN IP (YouTube TV sees Nashville)
 ```
 
-The Anders Way **default network is completely untouched**. The VPN tunnel is scoped only to the new `192.168.50.0/24` AppleTV VLAN. Nashville never sees the existing Orlando default subnet.
+> **Why a dedicated VLAN instead of domain-based routing?**
+YouTube TV uses Google CDN IPs that overlap with other Google services, change frequently, and can't be reliably targeted by domain alone. A dedicated VLAN for streaming devices (Apple TVs, etc.) is simpler and more reliable — all traffic from those devices exits Nashville. For mobile devices, connect to the AppleTV WiFi SSID when you want Nashville routing, and use the normal WiFi otherwise.
+>
 
 ---
 
 ## Confirmed Decisions
 
-| Decision | Choice |
-|---|---|
-| VPN Protocol | UniFi Site Magic (WireGuard, cloud-assisted) |
-| Traffic Identification | Domain-Based Traffic Routes |
-| Subnet Strategy | New dedicated VLAN for Apple TV (`192.168.50.0/24`) — default Anders Way network untouched |
+| Decision | Choice | Rationale |
+| --- | --- | --- |
+| VPN Protocol | Native WireGuard on UDM Pro | Built-in, no third-party dependencies, fast |
+| Nashville endpoint stability | Cloudflare DDNS (existing domain) | Stable hostname via Cloudflare API; no extra accounts needed |
+| Traffic scoping | Dedicated AppleTV VLAN per site | Routes all VLAN traffic through tunnel; default networks untouched |
+| Tunnel topology | Hub-and-spoke (Nashville = hub) | Both Orlando sites connect independently to Nashville |
 
 ---
 
 ## High-Level Phase Order
 
 ```
-Phase 1: Pre-flight checks (both sites)
-Phase 2: Create AppleTV VLAN on Orlando UCG Max
-Phase 3: Configure WireGuard Site-to-Site VPN (scoped to AppleTV VLAN)
-Phase 4: Verify VPN tunnel is up
-Phase 5: Configure domain-based Traffic Routes (Orlando side)
-Phase 6: NAT verification (Nashville side)
-Phase 7: Assign Apple TV to new VLAN
-Phase 8: Test & validate YouTube TV market
+Phase 1: Pre-flight checks (all three sites)
+Phase 2: Nashville — Configure DDNS on UDM Pro
+Phase 3: Nashville — Configure WireGuard Server on UDM Pro
+Phase 4: Anders Way — Create AppleTV VLAN + WireGuard Client
+Phase 5: Hardwood House — Create AppleTV VLAN + WireGuard Client
+Phase 6: Verify tunnels are up (both Orlando sites)
+Phase 7: NAT verification (Nashville side)
+Phase 8: Assign devices to AppleTV VLANs
+Phase 9: Test & validate YouTube TV market
 ```
 
 ---
 
-## Phase 1: Pre-Flight Checks
+## ✅ Phase 1: Pre-Flight Checks
 
-### Nashville — WingMan UDM Pro
-- [x] Confirm WAN IP shows Nashville location (visit whatismyip.com from Nashville)
-- [x] Note WAN interface name: `WAN1`
-- [x] Confirm firmware version: Settings → System → Updates → Network 10.1.85
-- [x] Confirm `192.168.50.0/24` is not already in use anywhere on Nashville network
-- [x] WAN IP type — static or dynamic?: `Static` / `68.53.130.216`
+### ✅ Nashville — WingMan UDM Pro
 
-### Orlando — Anders Way UCG Max
-- [x] Confirm firmware version: Settings → System → Updates → Network 10.8.85
-- [x] Note Apple TV MAC address: `c4:f7:c1:3c:d7:1e`
-- [x] Confirm `192.168.50.0/24` is not already in use on Orlando network
-- [x] Note any existing VLANs and their IDs to avoid conflicts: `None`
+- [x]  Confirm WAN IP shows Nashville location (visit [whatismyip.com](http://whatismyip.com/) from a Nashville device)
+- [x]  Note current WAN IP: `68.84.90.8`
+- [x]  Confirm Comcast/Xfinity gateway is in bridge mode (UDM Pro has public IP directly on WAN — confirmed: 68.84.90.8 on WAN1)
+- [x]  Confirm firmware version: Settings > System > Updates > Network 10.1.85
+- [x]  Confirm `192.168.50.0/24` is NOT in use on Nashville network
+- [x]  Confirm WireGuard tunnel subnet doesn't conflict — using `10.20.0.0/24` (note: `10.10.0.0/24` is reserved by Xfinity gateway admin interface)
+
+### ✅ Anders Way — UCG Max (Orlando)
+
+- [x]  Confirm firmware version: Settings > System > Updates > Network 10.1.85
+- [x]  Note Apple TV MAC address(es): `c4:f7:c1:3c:d7:1e`
+- [ ]  ~~Note mobile device MAC addresses (if fixed-assigning): `___________`~~
+- [x]  Confirm `192.168.50.0/24` is NOT in use on Anders Way network
+- [x]  Confirm no existing VLANs conflict with VLAN ID 50
+- [x]  Confirm WireGuard is available: Settings > VPN > VPN Client (check if WireGuard option exists)
+
+### ✅ Hardwood House — UX (Orlando)
+
+- [x]  Confirm firmware version: Settings > System > Updates > Network 9.0.114
+- [x]  Check if WireGuard VPN Client is available on firmware 9.0.114 (Settings > VPN > VPN Client)
+- [x]  Note Apple TV - Living Room - MAC address(es): `9c:3e:53:03:d3:2a`
+- [x]  Note Apple TV - Bedroom - MAC Address(es): `6c:4a:85:18:c0:1b`
+- [x]  Confirm `192.168.50.0/24` is NOT in use (default is 192.168.2.0/24, so likely fine)
+- [x]  Confirm no existing VLANs conflict with VLAN ID 50
 
 ---
 
-## Phase 2: Create AppleTV VLAN — Orlando UCG Max
+## ✅ Phase 2: Nashville — Configure Cloudflare DDNS on UDM Pro
+
+The UDM Pro needs a stable hostname so the Orlando WireGuard clients can always find it, even if Comcast changes the WAN IP. Since you already have a domain managed on Cloudflare (with existing tunnels/services), Cloudflare is the natural DDNS provider — no extra accounts needed.
+
+### ✅ Step 2a — Create Cloudflare API Token
 
 ```
-Settings → Networks → Create New Network
+Cloudflare Dashboard > My Profile > API Tokens > Create Token
+- Template: "Edit zone DNS"
+- Zone Resources: Include > Specific zone > [your domain]
+- Permissions: Zone / DNS / Edit
+- Create Token
+- Copy the token value (you won't see it again)
+```
+
+- [x]  Cloudflare API token created with Zone.DNS edit permission
+- [x]  Token value saved securely
+
+### ✅ Step 2b — Create DNS A Record
+
+```
+Cloudflare Dashboard > [your domain] > DNS > Records > Add Record
+- Type: A
+- Name: wingman (or whatever subdomain you prefer, e.g., nashville.mervinhernandez.com)
+- IPv4 address: [current Nashville WAN IP from Phase 1]
+- Proxy status: DNS only (grey cloud — NOT proxied)
+- TTL: Auto (or 1 min for faster propagation during setup)
+```
+
+> **Critical:** The record MUST be **DNS only** (grey cloud / proxy OFF). If Cloudflare's proxy is enabled (orange cloud), WireGuard will connect to Cloudflare's edge IP instead of Nashville — and Cloudflare doesn't proxy UDP, so WireGuard will fail silently.
+>
+- [x]  DNS A record created: `nashville.mervinhernandez.com` (or your chosen subdomain)
+- [x]  Proxy status confirmed **DNS only** (grey cloud)
+- [x]  Record resolves to Nashville WAN IP: `68.84.90.8`
+
+### ✅ Step 2c — Configure DDNS on UDM Pro
+
+```
+Settings > Internet > WAN > Dynamic DNS > Create New
+- Service: Cloudflare
+- Hostname: nashville.mervinhernandez.com (the full FQDN)
+- Username: [your Cloudflare email — or "Bearer" depending on UDM firmware]
+- Password: [the API token from Step 2a]
+```
+
+> **Note on credentials format:** The UDM Pro's Cloudflare DDNS integration may use the API token directly in the password field with your Cloudflare email as username. If it doesn't work, try username = `Bearer` and password = the API token. Check the UniFi community for the exact format your firmware version (10.1.85) expects.
+>
+
+The UDM Pro will now automatically update the Cloudflare DNS record whenever the WAN IP changes.
+
+- [x]  DDNS configured on UDM Pro with Cloudflare
+- [x]  Verify it's working: confirmed `nslookup nashville.mervinhernandez.com` resolves to `68.84.90.8` from external server (spin5)
+- [x]  Note DDNS hostname: `nashville.mervinhernandez.com`
+
+---
+
+## Phase 3: Nashville — Configure WireGuard Server on UDM Pro
+
+The UDM Pro acts as the WireGuard server. Both Orlando sites will connect to it as clients.
+
+### ✅ Step 3a — Create WireGuard Server
+
+```
+Settings > VPN > VPN Server > Create New
+- Protocol: WireGuard
+- Name: Nashville-WG-Server
+- Port: 51820 (default, or choose another)
+- Server Address: 10.20.0.1/24 (tunnel network — not the LAN)
+- DNS: 1.1.1.1 (or your preferred DNS)
+```
+
+- [x]  WireGuard server created on UDM Pro: `WingManWG`
+- [x]  Note server port: `51820`
+- [x]  Note server tunnel IP: `10.20.0.1/24` (Advanced > Manual > Gateway/Subnet confirmed)
+
+### ✅ Step 3b — Firewall: Allow WireGuard inbound on WAN
+
+The UDM Pro should auto-create a firewall rule for the WireGuard port, but verify:
+
+```
+Settings > Firewall & Security > Firewall Rules > WAN tab
+- Confirm a rule exists allowing UDP traffic on port 51820 (or your chosen port) inbound
+- If not, create one:
+    Name: Allow WireGuard
+    Action: Allow
+    Protocol: UDP
+    Destination Port: 51820
+    Source: Any
+```
+
+- [x]  Firewall rule auto-created by UDM Pro: "Allow WireGuard Server" — Accept, Internet Local, UDP, port 51820
+
+### ⏳ Step 3c — Create Client Configurations
+
+Create two client profiles — one for each Orlando site.
+
+**Client 1: Anders Way**
+
+```
+Settings > VPN > VPN Server > Nashville-WG-Server > Add Client
+- Name: AndersWay-Client
+- Tunnel IP: 10.20.0.2 (auto-assigned or manual)
+- Download / copy the client configuration
+```
+
+**Client 2: Hardwood House**
+
+```
+Settings > VPN > VPN Server > Nashville-WG-Server > Add Client
+- Name: HardwoodHouse-Client
+- Tunnel IP: 10.20.0.3 (auto-assigned or manual)
+- Download / copy the client configuration
+```
+
+> The client config will include: server public key, client private key, endpoint (use your DDNS hostname + port here), and allowed IPs. Modify the `Endpoint` to use the DDNS hostname instead of a raw IP.
+>
+- [ ]  Anders Way client config created — tunnel IP: `10.20.0.2`
+- [ ]  Hardwood House client config created — tunnel IP: `10.20.0.3`
+- [ ]  Both configs use DDNS hostname as endpoint (not raw IP)
+- [ ]  Client configs saved securely for use in Phases 4 and 5
+
+### ⏳ Step 3d — Enable NAT / Masquerade for tunnel traffic
+
+Traffic arriving from the WireGuard tunnel needs to be NATted to the UDM Pro's WAN IP so it can reach the internet (and YouTube TV sees a Nashville IP).
+
+On UniFi 10.x, the UDM Pro should automatically NAT traffic from VPN clients destined for the internet. Verify:
+
+```
+Settings > Routing > NAT
+- Confirm masquerade is enabled for WAN (this is typically on by default)
+```
+
+If YouTube TV still shows the wrong market after testing (Phase 9), you may need a custom NAT rule:
+
+```
+Settings > Routing > NAT > Create New Rule
+- Name: NAT-WG-Clients
+- Type: Masquerade
+- Source: 10.20.0.0/24
+- Outbound Interface: WAN
+```
+
+- [ ]  NAT / masquerade confirmed for WireGuard client traffic exiting WAN
+
+---
+
+## Phase 4: Anders Way — Create AppleTV VLAN + WireGuard Client
+
+### Step 4a — Create AppleTV VLAN
+
+```
+Settings > Networks > Create New Network
 - Name: AppleTV
-- Network Type: VLAN Only (or Corporate)
 - VLAN ID: 50  (confirm unused)
-- Subnet: 192.168.50.0/24
-- Gateway: 192.168.50.1
+- Gateway IP / Subnet: 192.168.50.1/24
 - DHCP: Enabled
 - DHCP Range: 192.168.50.100 – 192.168.50.200
 ```
 
-- [x] AppleTV VLAN created
-- [x] VLAN ID confirmed unused: `50`
-- [x] DHCP enabled and range set
+- [ ]  AppleTV VLAN created on Anders Way
+- [ ]  VLAN ID confirmed unused: 50
 
-> This VLAN is isolated from the Anders Way default network. The default network is unaffected.
-
----
-
-## Phase 2b: Xfinity Gateway — ~~DMZ Setup~~ (Eliminated)
-
-> **No longer needed.** Switching to UniFi Site Magic removes all dependency on the Xfinity gateway. Site Magic uses outbound-initiated connections through UniFi's cloud relay — no DMZ, no port forwarding, no public IP exposure required.
-
----
-
-## Phase 3: Tailscale VPN via Nashville Mac Mini
-
-Tailscale uses WireGuard with built-in NAT traversal — no port forwarding, no DMZ, works through the Xfinity double-NAT on Nashville. The Nashville Mac Mini acts as a Tailscale **exit node**, and the Hardwood House UniFi Express is configured via SSH to route all AppleTV VLAN traffic through it.
-
-> **Note on firmware updates:** Tailscale is installed via SSH outside of UniFi's official support. Firmware updates may require re-installing the Tailscale binary. The state file and boot script are stored in `/data/` which persists across updates.
-
----
-
-### Step 3a — Nashville Mac Mini: Enable exit node
-
-```bash
-sudo tailscale up --advertise-exit-node
-```
-
-- [x] Exit node advertised on Mac Mini
-
-### Step 3b — Approve exit node in Tailscale admin console
+### Step 4b — Create AppleTV WiFi SSID (optional but recommended)
 
 ```
-https://login.tailscale.com/admin/machines
-→ Mac Mini → "..." → Edit route settings → Enable "Use as exit node" ✓
-```
-
-- [x] Exit node approved in admin console
-- [x] Note Mac Mini's Tailscale hostname or IP (100.x.x.x): `100.98.194.40`
-
-### Step 3c — SSH into Hardwood House UniFi Express
-
-```bash
-ssh root@192.168.2.1
-```
-
-- [x] SSH access confirmed
-- [x] UX LAN IP noted: `192.168.2.1`
-
-### Step 3d — Install Tailscale on UniFi Express (ARM64)
-
-```bash
-apt-get install tailscale -y
-```
-
-- [x] Tailscale installed (`tailscale version` confirmed: 1.94.2)
-- [x] systemd service created automatically — daemon starts on boot
-
-### Step 3e — Authenticate to tailnet
-
-```bash
-tailscale up
-# Visit the auth URL printed — log in to your Tailscale account
-```
-
-- [x] Express authenticated and visible in Tailscale admin console as `hardwood-house`
-
-### Step 3f — Cleanup: Remove any leftover rules from previous attempts
-
-Before doing anything, verify the current state of ip rules and clear any leftover from prior attempts.
-
-**Check current state:**
-```bash
-ip rule show
-```
-
-If you see `not from 192.168.50.0/24 lookup main priority 200` in the output, remove it:
-```bash
-ip rule del not from 192.168.50.0/24 lookup main priority 200
-```
-
-**Verify Tailscale is down and table 52 is clean:**
-```bash
-tailscale status
-ip route show table 52
-```
-
-Table 52 should only show `100.x.x.x` peer routes — no `0.0.0.0` or `128.0.0.0` default routes. If tailscale is running with an exit node, bring it down first:
-```bash
-tailscale down
-```
-
-**Verify internet is working before proceeding:**
-```bash
-curl -s https://ifconfig.me
-```
-Should return Hardwood House's WAN IP. **Do not proceed if internet is broken at this point.**
-
-- [ ] No leftover ip rules from prior attempts
-- [ ] Tailscale down, table 52 clean
-- [ ] Internet confirmed working
-
----
-
-### Step 3g — Add bypass rule for all non-VLAN-50 traffic
-
-> **What this does:** Routes all traffic that is NOT from `192.168.50.0/24` through UniFi's WAN table (`201.eth1`) at priority 200 — before Tailscale's rule at priority 5270. This ensures all existing Hardwood House traffic is completely unaffected when the exit node is activated in the next step.
-
-> **Root cause of previous outage:** We used `lookup main` — but UniFi stores the internet default route in `201.eth1`, not `main`. The bypass rule didn't match, traffic fell into Tailscale's table 52, and internet broke. Now corrected to `lookup 201.eth1`.
-
-**Run ONE command:**
-```bash
-ip rule add not from 192.168.50.0/24 lookup 201.eth1 priority 200
-```
-
-**Reversal (if anything looks wrong):**
-```bash
-ip rule del not from 192.168.50.0/24 lookup 201.eth1 priority 200
-```
-
-**CHECKPOINT — verify rule is in place and internet still works:**
-```bash
-ip rule show | grep 200
-```
-Expected output:
-```
-200:    not from 192.168.50.0/24 lookup 201.eth1
-```
-
-```bash
-curl -s https://ifconfig.me
-```
-Must still return Hardwood WAN IP. **Do not proceed if this fails.**
-
-- [ ] Bypass rule added at priority 200
-- [ ] Internet confirmed still working after rule added
-
----
-
-### Step 3h — Bring Tailscale up with Nashville exit node
-
-> **What this does:** Connects the Express to the tailnet and routes all traffic that reaches Tailscale's table 52 through the Nashville Mac Mini. Non-VLAN-50 traffic is blocked from reaching table 52 by the bypass rule added in Step 3g.
-
-**Run ONE command:**
-```bash
-tailscale up --exit-node=mervin-macmini2026 --exit-node-allow-lan-access --ssh
-```
-
-**Reversal (immediately restores normal routing):**
-```bash
-tailscale down
-```
-
-**CHECKPOINT — verify table 52 has exit-node routes:**
-```bash
-ip route show table 52 | grep -E "^0\.|^128\."
-```
-Expected: two lines like:
-```
-0.0.0.0/1 dev tailscale0
-128.0.0.0/1 dev tailscale0
-```
-
-**CHECKPOINT — verify Hardwood internet is still working:**
-```bash
-curl -s https://ifconfig.me
-```
-Must return Hardwood House WAN IP — NOT Nashville's IP (`68.53.130.216`).
-
-If it returns Nashville's IP, the bypass rule is not working. Run reversal immediately:
-```bash
-tailscale down
-ip rule del not from 192.168.50.0/24 lookup 201.eth1 priority 200
-```
-
-- [ ] Tailscale up with exit node set
-- [ ] Table 52 has 0.0.0.0/1 and 128.0.0.0/1 routes to tailscale0
-- [ ] Hardwood internet confirmed working (shows Hardwood WAN IP, not Nashville)
-
----
-
-### Step 3i — Add MASQUERADE rule for VLAN 50
-
-> **What this does:** Rewrites the source IP of VLAN 50 packets to the Express's own Tailscale IP (`100.91.86.101`) as they leave via `tailscale0`. This is required so the Nashville Mac Mini can route return traffic back correctly through the tunnel.
-
-**Run ONE command:**
-```bash
-iptables -t nat -A POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE
-```
-
-**Reversal:**
-```bash
-iptables -t nat -D POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE
-```
-
-**CHECKPOINT — verify the rule is in place:**
-```bash
-iptables -t nat -L POSTROUTING -n --line-numbers | grep 192.168.50
-```
-Expected: one line showing the MASQUERADE rule for `192.168.50.0/24` out `tailscale0`.
-
-**CHECKPOINT — verify Hardwood internet still working:**
-```bash
-curl -s https://ifconfig.me
-```
-Still must return Hardwood WAN IP.
-
-- [ ] MASQUERADE rule in place
-- [ ] Hardwood internet still working after MASQUERADE added
-
----
-
-### Step 3j — Make all rules persistent across reboots
-
-> Tailscale's systemd service handles restarting the daemon. This script only needs to re-apply the ip rules and iptables on boot.
-
-**Create the boot script:**
-```bash
-mkdir -p /data/on_boot.d
-cat > /data/on_boot.d/99-tailscale-routing.sh << 'EOF'
-#!/bin/sh
-sleep 15  # wait for tailscale0 interface to come up after tailscaled starts
-ip rule add not from 192.168.50.0/24 lookup 201.eth1 priority 200 2>/dev/null || true
-tailscale up --exit-node=mervin-macmini2026 --exit-node-allow-lan-access --ssh 2>/dev/null || true
-iptables -t nat -A POSTROUTING -s 192.168.50.0/24 -o tailscale0 -j MASQUERADE 2>/dev/null || true
-EOF
-chmod +x /data/on_boot.d/99-tailscale-routing.sh
-```
-
-**Verify the file looks correct:**
-```bash
-cat /data/on_boot.d/99-tailscale-routing.sh
-```
-
-**Reversal (disable the boot script without deleting it):**
-```bash
-chmod -x /data/on_boot.d/99-tailscale-routing.sh
-```
-
-- [ ] Boot script created at `/data/on_boot.d/99-tailscale-routing.sh`
-- [ ] File is executable (`chmod +x` confirmed)
-- [ ] Contents verified with `cat`
-
----
-
-## Phase 4: Verify VPN Tunnel
-
-- [ ] Nashville: Settings → VPN → Site-to-Site VPN — tunnel shows **Connected**
-- [ ] Orlando: Settings → VPN → Site-to-Site VPN — tunnel shows **Connected**
-- [ ] Temporarily assign a laptop/device to the AppleTV VLAN (192.168.50.x), then ping `10.100.0.1` (Nashville tunnel IP) — should succeed
-- [ ] Ping Nashville LAN gateway `192.168.1.1` from that device — should succeed
-- [ ] Confirm Anders Way default network devices are unaffected (ping their gateway, browse normally)
-
----
-
-## Phase 5: Domain-Based Traffic Routes — Not Required
-
-> **With the Tailscale approach, domain-based Traffic Routes are not needed.** The policy routing rules from Phase 3g route ALL AppleTV VLAN (`192.168.50.0/24`) traffic through the Tailscale tunnel at the kernel level — before DNS interception. Every connection from an AppleTV VLAN device exits through Nashville WAN automatically.
->
-> This is simpler and more reliable than domain-based routing: no risk of missed domains, hardcoded IPs, or CDN bypasses.
-
-- [x] Domain-based Traffic Routes — skipped (not needed with Tailscale policy routing)
-
----
-
-## Phase 6: NAT Verification — Nashville Mac Mini (Tailscale Exit Node)
-
-With Tailscale, the Nashville Mac Mini performs NAT automatically when acting as an exit node — all traffic forwarded through it exits Nashville WAN as the Mac Mini's IP (which is NATted by the Nashville router to the Nashville public WAN IP `68.53.130.216`).
-
-**Verify this is working:**
-```bash
-# On the Nashville Mac Mini — confirm IP forwarding is enabled (Tailscale enables this automatically)
-sysctl net.inet.ip.forwarding   # macOS
-# Expected: net.inet.ip.forwarding = 1
-```
-
-If traffic isn't exiting Nashville (YouTube TV still shows wrong market after Phase 8 testing):
-```bash
-# On Nashville Mac Mini — confirm Tailscale sees the Express as a connected client
-tailscale status
-# Express should appear in the list
-
-# Check exit node is active
-tailscale status | grep -i exit
-```
-
-- [ ] Nashville Mac Mini IP forwarding confirmed active (Tailscale manages this)
-- [ ] Express visible in `tailscale status` on Mac Mini
-
----
-
-## Phase 7: Assign Apple TV to AppleTV VLAN
-
-### If Apple TV is wired:
-```
-UniFi Network → Ports → [port Apple TV is connected to]
-- Port Profile: AppleTV  (the VLAN created in Phase 2)
-```
-
-### If Apple TV is on WiFi:
-```
-Settings → WiFi → Create New SSID
-- Name: [e.g., "AppleTV-Nash" or hidden SSID]
+Settings > WiFi > Create New
+- Name: AppleTV-Nash (or a hidden SSID)
 - Network: AppleTV (VLAN 50)
 - Security: WPA2/WPA3
+- Password: [choose]
 ```
-Then connect Apple TV to this SSID.
 
-- [ ] Apple TV connected to AppleTV VLAN
-- [ ] Apple TV receives IP in `192.168.50.x` range — confirm in:
-  - Network → Clients → find Apple TV → note IP address
+> Mobile devices can join this SSID when they want Nashville routing for YouTube TV, and use the normal SSID otherwise.
+>
+- [ ]  AppleTV WiFi SSID created
+
+### Step 4c — Configure WireGuard VPN Client
+
+```
+Settings > VPN > VPN Client > Create New
+- Protocol: WireGuard
+- Name: Nashville-Tunnel
+- Configuration: Paste or import the Anders Way client config from Phase 3c
+  - Ensure Endpoint uses DDNS hostname
+  - Ensure AllowedIPs = 0.0.0.0/0 (send all tunnel-routed traffic to Nashville)
+```
+
+- [ ]  WireGuard VPN client configured on Anders Way UCG Max
+- [ ]  Tunnel status shows Connected (Settings > VPN)
+
+### Step 4d — Policy-Based Routing: Route AppleTV VLAN through tunnel
+
+This is the critical step — it tells the UCG Max to send all traffic from the AppleTV VLAN through the WireGuard tunnel instead of the local WAN.
+
+```
+Settings > Routing > Policy-Based Routes > Create New
+- Name: AppleTV-via-Nashville
+- Source: AppleTV network (192.168.50.0/24)
+- Destination: Any (0.0.0.0/0)
+- Interface: Nashville-Tunnel (the WireGuard VPN client)
+```
+
+> **Important:** This only affects the AppleTV VLAN. The Anders Way default network (192.168.1.0/24) is completely unaffected.
+>
+- [ ]  Policy-based route created: AppleTV VLAN > Nashville tunnel
+- [ ]  Default network traffic confirmed unaffected (test from a default-network device)
 
 ---
 
-## Phase 8: Test & Validate
+## Phase 5: Hardwood House — Create AppleTV VLAN + WireGuard Client
 
-- [ ] On Apple TV: open YouTube TV → Settings → Area — confirm shows **Nashville** market
-- [ ] Confirm WAN IP from Apple TV browser shows Nashville IP (visit whatismyip.com in browser or AltStore)
-- [ ] On a default Anders Way network device: confirm WAN IP still shows Orlando IP (unchanged)
-- [ ] On Apple TV: test a YouTube TV live stream — confirm playback quality is acceptable
-- [ ] Run speed test from Apple TV — note latency (Orlando → Nashville round trip is expected, typically 20–40ms added)
-- [ ] Test for a few days — confirm no VPN tunnel drops (Settings → VPN on either console)
+> **Prerequisite:** Confirm from Phase 1 that WireGuard VPN Client is available on the UX firmware (9.0.114). If not, see the firmware note in Phase 1 and resolve before continuing.
+>
+
+### Step 5a — Create AppleTV VLAN
+
+```
+Settings > Networks > Create New Network
+- Name: AppleTV
+- VLAN ID: 50  (confirm unused)
+- Gateway IP / Subnet: 192.168.50.1/24
+- DHCP: Enabled
+- DHCP Range: 192.168.50.100 – 192.168.50.200
+```
+
+- [ ]  AppleTV VLAN created on Hardwood House
+- [ ]  VLAN ID confirmed unused: 50
+
+### Step 5b — Create AppleTV WiFi SSID (optional but recommended)
+
+```
+Settings > WiFi > Create New
+- Name: AppleTV-Nash (or a hidden SSID)
+- Network: AppleTV (VLAN 50)
+- Security: WPA2/WPA3
+- Password: [choose]
+```
+
+- [ ]  AppleTV WiFi SSID created
+
+### Step 5c — Configure WireGuard VPN Client
+
+```
+Settings > VPN > VPN Client > Create New
+- Protocol: WireGuard
+- Name: Nashville-Tunnel
+- Configuration: Paste or import the Hardwood House client config from Phase 3c
+  - Ensure Endpoint uses DDNS hostname
+  - Ensure AllowedIPs = 0.0.0.0/0
+```
+
+- [ ]  WireGuard VPN client configured on Hardwood House UX
+- [ ]  Tunnel status shows Connected (Settings > VPN)
+
+### Step 5d — Policy-Based Routing: Route AppleTV VLAN through tunnel
+
+```
+Settings > Routing > Policy-Based Routes > Create New
+- Name: AppleTV-via-Nashville
+- Source: AppleTV network (192.168.50.0/24)
+- Destination: Any (0.0.0.0/0)
+- Interface: Nashville-Tunnel (the WireGuard VPN client)
+```
+
+- [ ]  Policy-based route created: AppleTV VLAN > Nashville tunnel
+- [ ]  Default network traffic confirmed unaffected
+
+---
+
+## Phase 6: Verify Tunnels
+
+### Anders Way
+
+- [ ]  Settings > VPN > VPN Client — Nashville-Tunnel shows **Connected**
+- [ ]  Assign a test device (laptop) to the AppleTV VLAN (192.168.50.x)
+- [ ]  From test device: visit [whatismyip.com](http://whatismyip.com/) — should show **Nashville WAN IP**
+- [ ]  From a default-network device: visit [whatismyip.com](http://whatismyip.com/) — should show **Anders Way WAN IP** (unchanged)
+
+### Hardwood House
+
+- [ ]  Settings > VPN > VPN Client — Nashville-Tunnel shows **Connected**
+- [ ]  Assign a test device (laptop) to the AppleTV VLAN (192.168.50.x)
+- [ ]  From test device: visit [whatismyip.com](http://whatismyip.com/) — should show **Nashville WAN IP**
+- [ ]  From a default-network device: visit [whatismyip.com](http://whatismyip.com/) — should show **Hardwood House WAN IP** (unchanged)
+
+### Nashville
+
+- [ ]  Settings > VPN > VPN Server — both clients show connected
+- [ ]  Verify no unexpected traffic on Nashville LAN (tunnel traffic should NAT out WAN, not leak to LAN)
+
+---
+
+## Phase 7: NAT Verification — Nashville
+
+If Phase 6 test devices show Nashville WAN IP on [whatismyip.com](http://whatismyip.com/), NAT is working correctly. If not:
+
+- [ ]  Check Settings > Routing > NAT — masquerade should be enabled for WAN
+- [ ]  If needed, create a manual masquerade rule for source 10.20.0.0/24 out WAN (see Phase 3d)
+- [ ]  Re-test from an AppleTV VLAN device — [whatismyip.com](http://whatismyip.com/) must show Nashville IP
+
+---
+
+## Phase 8: Assign Devices to AppleTV VLANs
+
+### Anders Way — Apple TV
+
+**If wired:**
+
+```
+UniFi Network > Ports > [port Apple TV is on]
+- Port Profile: AppleTV (VLAN 50)
+```
+
+**If wireless:**
+Connect Apple TV to the AppleTV-Nash SSID created in Step 4b.
+
+- [ ]  Anders Way Apple TV on AppleTV VLAN
+- [ ]  Apple TV receives IP in 192.168.50.x range
+
+### Hardwood House — Apple TV
+
+**If wired:**
+
+```
+UniFi Network > Ports > [port Apple TV is on]
+- Port Profile: AppleTV (VLAN 50)
+```
+
+**If wireless:**
+Connect Apple TV to the AppleTV-Nash SSID created in Step 5b.
+
+- [ ]  Hardwood House Apple TV on AppleTV VLAN
+- [ ]  Apple TV receives IP in 192.168.50.x range
+
+### Mobile Devices
+
+> Mobile devices can switch to the AppleTV-Nash SSID when they want to watch YouTube TV with Nashville market, and use the normal SSID for everything else. No permanent assignment needed.
+>
+
+---
+
+## Phase 9: Test & Validate
+
+### Anders Way
+
+- [ ]  On Apple TV: open YouTube TV > Settings > Area — confirm shows **Nashville** market
+- [ ]  On Apple TV: [whatismyip.com](http://whatismyip.com/) (via browser or app) shows Nashville IP
+- [ ]  Test a YouTube TV live stream — confirm playback quality is acceptable
+- [ ]  On a default-network device: confirm WAN IP still shows Anders Way / Orlando IP
+- [ ]  On a mobile device connected to AppleTV-Nash SSID: confirm Nashville market in YouTube TV
+
+### Hardwood House
+
+- [ ]  On Apple TV: open YouTube TV > Settings > Area — confirm shows **Nashville** market
+- [ ]  On Apple TV: [whatismyip.com](http://whatismyip.com/) shows Nashville IP
+- [ ]  Test a YouTube TV live stream — confirm playback quality
+- [ ]  On a default-network device: confirm WAN IP still shows Hardwood House / Orlando IP
+- [ ]  On a mobile device connected to AppleTV-Nash SSID: confirm Nashville market in YouTube TV
+
+### Performance Baseline
+
+- [ ]  Run speed test from an AppleTV VLAN device at each site — note download/upload/latency
+- [ ]  Expected: ~20-40ms added latency (Orlando <> Nashville round trip)
+- [ ]  YouTube TV uses ~13-20 Mbps per stream — confirm Nashville upload can handle concurrent streams from both sites
 
 ---
 
 ## Ongoing Considerations
 
 | Item | Note |
-|---|---|
-| **Nashville WAN IP** | If dynamic, use DDNS hostname in WireGuard config — avoids tunnel breaking on IP change |
-| **YouTube TV domain changes** | Domain-based routing auto-adapts; no maintenance needed for IP changes |
-| **Bandwidth** | YouTube TV uses ~13–20 Mbps per stream. All streams traverse Nashville WAN upstream |
-| **Apple TV wired vs wireless** | Wired strongly preferred — eliminates WiFi as a variable |
-| **Tunnel monitoring** | Periodically check Settings → VPN → Site-to-Site VPN on both consoles for uptime |
-| **Adding more devices** | Assign any device to the AppleTV VLAN (VLAN 50) to route its YouTube TV traffic via Nashville |
+| --- | --- |
+| **DDNS** | UDM Pro auto-updates DDNS record on WAN IP change. Tunnels reconnect automatically using the hostname. |
+| **Bandwidth** | All YouTube TV streams traverse Nashville WAN. Two sites streaming simultaneously = 2x bandwidth. Monitor Nashville upload capacity. |
+| **Hardwood House firmware** | If UX needs to stay on 9.0.114, WireGuard may require an alternative approach (see Phase 1 note). |
+| **Adding more devices** | Any device on the AppleTV VLAN (VLAN 50) automatically routes through Nashville. Just assign it to the VLAN or connect to the AppleTV-Nash SSID. |
+| **Tunnel monitoring** | Check VPN status on each console periodically. If a tunnel drops, DDNS hostname change or firewall issue is the likely cause. |
+| **YouTube TV home area** | YouTube TV requires you to check in from your "home area" periodically. Using Nashville as the tunnel exit keeps you in the Nashville market. Ensure at least one Nashville device checks in occasionally. |
+
+---
+
+## Rollback Plan
+
+If anything goes wrong at any phase, rollback is straightforward:
+
+| To undo... | Do this |
+| --- | --- |
+| Policy-based route | Delete the route in Settings > Routing > Policy-Based Routes |
+| WireGuard client | Disconnect and delete in Settings > VPN > VPN Client |
+| AppleTV VLAN | Move devices back to default network, then delete the VLAN |
+| WireGuard server (Nashville) | Delete in Settings > VPN > VPN Server |
+| DDNS | Disable in Settings > Internet > WAN > Dynamic DNS |
+
+All changes are made through the UniFi UI — no SSH, no boot scripts, no manual iptables rules to track.
 
 ---
 
 ## Status Tracker
 
 | Phase | Status | Notes |
-|---|---|---|
-| Decision 1: VPN Protocol | Updated — Tailscale via Nashville Mac Mini exit node | No port forwarding needed; works through double-NAT |
-| Decision 2: Domain-Based Traffic Routes | Confirmed | |
-| Decision 3: AppleTV VLAN (192.168.50.0/24) | Confirmed | Default Anders Way network untouched |
-| Phase 1: Pre-flight checks | Complete | Nashville public IP: 68.53.130.216 |
-| Phase 2: Create AppleTV VLAN (Orlando) | Complete | 192.168.50.0/24, VLAN 50 |
-| Phase 2b: Xfinity DMZ (Nashville) | Eliminated | Not needed — Tailscale works through double-NAT |
-| Phase 3: Tailscale VPN setup | In progress | Steps 3a–3e complete; resuming at 3f (cleanup + correct bypass rule) |
-| Phase 4: VPN tunnel verified | Not started | |
-| Phase 5: Domain Traffic Routes | Eliminated | Not needed — all VLAN 50 traffic routes via Nashville at kernel level |
-| Phase 6: NAT verification (Nashville Mac Mini) | Not started | Tailscale handles automatically; verify with tailscale status |
-| Phase 7: Apple TV assigned to VLAN | Not started | |
-| Phase 8: Testing | Not started | |
+| --- | --- | --- |
+| Phase 1: Pre-flight checks | Not started | All three sites need verification |
+| Phase 2: Nashville Cloudflare DDNS | **Complete** | [nashville.mervinhernandez.com](http://nashville.mervinhernandez.com/) → 68.84.90.8 |
+| Phase 3: Nashville WireGuard Server | Not started | Two client configs needed (one per Orlando site) |
+| Phase 4: Anders Way VLAN + WireGuard Client | Not started |  |
+| Phase 5: Hardwood House VLAN + WireGuard Client | Not started | Firmware compatibility TBD |
+| Phase 6: Tunnel verification | Not started |  |
+| Phase 7: NAT verification | Not started |  |
+| Phase 8: Device assignment | Not started |  |
+| Phase 9: Testing | Not started |  |

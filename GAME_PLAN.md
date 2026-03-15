@@ -198,6 +198,11 @@ Settings > Firewall & Security > Firewall Rules > WAN tab
 
 - [x]  Firewall rule auto-created by UDM Pro: "Allow WireGuard Server" — Accept, Internet Local, UDP, port 51820
 
+###  ⏳Step 3b1 - Individual Remote Client
+My WingManUDM is located in Nashville and seems to be correctly configured to allow connections to wireguard. 
+I am presently located in Wisconsin. I want to connect just my laptop to the UDM wireguard, and route my YouTube TV traffic as a test of my wireguard. 
+Give me the specific steps for connecting just my laptop directly to the UDM via wireguard, and for my YouTube TV traffic to go to Nashville and back to my laptop. 
+
 ### ⏳ Step 3c — Create Client Configurations
 
 Create two client profiles — one for each Orlando site.

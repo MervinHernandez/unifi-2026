@@ -58,5 +58,5 @@ Fetches Google's current IP ranges from `gstatic.com`, patches `AllowedIPs` in a
 
 ## Docs
 
-- `GAME_PLAN.md` — master implementation plan with full checklists, UniFi UI steps, and rollback notes
+- `README.md` — master implementation plan with full checklists, UniFi UI steps, and rollback notes
 - `README-step-3b1.md` — laptop remote test guide (connect personally to Nashville WireGuard before configuring Orlando sites)

@@ -97,7 +97,7 @@ If both show Nashville, your traffic is exiting through the Nashville WAN correc
 
 - Disconnect the tunnel (toggle off in app, or `sudo wg-quick down`)
 - The Nashville WireGuard server will still be running for Phase 3c (Orlando client configs)
-- Mark Step 3b1 complete in GAME_PLAN.md and proceed to Step 3c
+- Mark Step 3b1 complete in README.md and proceed to Step 3c
 
 ---
 
